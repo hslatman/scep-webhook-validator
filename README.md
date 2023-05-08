@@ -7,6 +7,7 @@ A basic dynamic SCEP webhook validation server example
 * A [step-ca](https://github.com/smallstep/certificates/) instance
 * A SCEP provisioner configured with a `SCEPCHALLENGE` webhook.
 * An ACME provisioner
+* A SCEP client, requesting a certificate using a challenge password.
 
 ## Usage
 
