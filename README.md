@@ -4,9 +4,9 @@ A basic dynamic SCEP webhook validation server example
 
 ## Prerequisites
 
-* A [step-ca](https://github.com/smallstep/certificates/) instance
+* A [step-ca](https://github.com/smallstep/certificates/) instance with Remote Administration and the insecure address `"insecureAddress"` configured.
 * A SCEP provisioner configured with a `SCEPCHALLENGE` webhook.
-* An ACME provisioner
+* An ACME provisioner.
 * A SCEP client, requesting a certificate using a challenge password.
 
 ## Usage
@@ -14,7 +14,7 @@ A basic dynamic SCEP webhook validation server example
 ```console
 ./scep-webhook-validator -help
 Usage of scep-webhook-validator
-  - string
+  -directory string
     	The ACME directory URL to use (default "https://127.0.0.1:8443/acme/acme/directory")
   -root string
     	Path to the root certificate to trust
@@ -25,7 +25,7 @@ Usage of scep-webhook-validator
 Example usage:
 
 ```console
-./scep-webhook-validator -directory https://127.0.0.1:8443/acme/acme/directory  -root /path/to/root.crt -secret MTIzNAo=
+./scep-webhook-validator -directory https://127.0.0.1:8443/acme/acme/directory -root /path/to/root.crt -secret MTIzNAo=
 ```
 
 The example uses the [step-ca](https://github.com/smallstep/certificates/) ACME directory at [https://127.0.0.1:8443/acme/acme/directory](https://127.0.0.1:8443/acme/acme/directory) to request a certificate, because all webhook servers must use HTTPS.
@@ -40,3 +40,26 @@ An ACME provisioner named `acme` is configured with the following settings:
 ```
 
 The `secret` is optional, but if provided, should be equal to the `Secret` returned when adding the `SCEPCHALLENGE` webhook.
+
+The SCEP provisioner should look similar to the one below:
+
+```json
+    {
+        "type": "SCEP",
+        "name": "scepca",
+        "challenge": "*** REDACTED ***",
+        "minimumPublicKeyLength": 2048,
+        "encryptionAlgorithmIdentifier": 2,
+        "options": {
+            "webhooks": [
+                {
+                    "id": "6d230d9c-1a51-4ff9-950f-9923dd68a177",
+                    "name": "scepchallenge",
+                    "url": "https://127.0.0.1:8081/scepvalidate",
+                    "kind": "SCEPCHALLENGE",
+                    "certType": "ALL"
+                }
+            ]
+        },
+    }
+```
