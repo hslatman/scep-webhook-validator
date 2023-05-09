@@ -116,13 +116,10 @@ func main() {
 		if req.Challenge != "" { // NOTE: try parsing a JWT; otherwise print the challenge value
 			tok, err := jose.ParseJWS(req.Challenge)
 			if err == nil {
-				token, err := tok.CompactSerialize()
-				if err != nil {
-					err = fmt.Errorf("error serializing token: %w", jose.TrimPrefix(err))
+				if err = printToken(tok); err != nil {
 					http.Error(w, err.Error(), http.StatusBadRequest)
 					return
 				}
-				printToken(token)
 			} else {
 				fmt.Println(req.Challenge)
 			}
@@ -216,7 +213,12 @@ func getWebhookID(r *http.Request) (id string, err error) {
 	return id, err
 }
 
-func printToken(token string) error {
+func printToken(tok *jose.JSONWebSignature) error {
+	token, err := tok.CompactSerialize()
+	if err != nil {
+		return fmt.Errorf("error serializing token: %w", jose.TrimPrefix(err))
+	}
+
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return errors.New("error decoding token: JWT must have three parts")
