@@ -13,21 +13,19 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httputil"
-	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/caddyserver/certmagic"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/spf13/afero"
 	"go.step.sm/crypto/jose"
 	"go.step.sm/crypto/pemutil"
+
+	memory "github.com/hslatman/certmagic-memory-storage"
 )
 
 var (
@@ -58,34 +56,10 @@ func main() {
 	pool, err := prepareTrustedRootPool()
 	fatalIf(err)
 
-	// see https://github.com/caddyserver/certmagic/pull/198/files
-	var cache *certmagic.Cache
-	cache = certmagic.NewCache(certmagic.CacheOptions{
-		GetConfigForCert: func(cert certmagic.Certificate) (*certmagic.Config, error) {
-			return certmagic.New(cache, certmagic.Config{}), nil
-		},
-		RenewCheckInterval: time.Minute,
-	})
-	cm := certmagic.New(cache, certmagic.Default)
-	cm.Storage = newMemoryStorage()
-	issuer := certmagic.NewACMEIssuer(cm, certmagic.ACMEIssuer{
-		CA:           directory,
-		TestCA:       directory,
-		Email:        "someone@example.com",
-		Agreed:       true,
-		TrustedRoots: pool,
-	})
-
-	cm.Issuers = append(cm.Issuers, issuer)
-
-	// start managing certificates
+	// create CertMagic configuration and start managing certificates
+	cm := prepareCertMagic(pool)
 	err = cm.ManageSync(context.Background(), []string{"127.0.0.1", "localhost"})
 	fatalIf(err)
-
-	tlsConfig := cm.TLSConfig()
-	tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
-	tlsConfig.ClientCAs = pool
-	tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 
 	list, err := cm.Storage.List(context.Background(), "", true)
 	fatalIf(err)
@@ -165,6 +139,11 @@ func main() {
 		w.Write(b)
 	})
 
+	tlsConfig := cm.TLSConfig()
+	tlsConfig.NextProtos = append([]string{"h2", "http/1.1"}, tlsConfig.NextProtos...)
+	tlsConfig.ClientCAs = pool
+	tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+
 	server := http.Server{
 		Addr:      ":8081",
 		Handler:   r,
@@ -192,6 +171,28 @@ func prepareTrustedRootPool() (*x509.CertPool, error) {
 		}
 	}
 	return pool, nil
+}
+
+func prepareCertMagic(trustedRoots *x509.CertPool) *certmagic.Config {
+	// see https://github.com/caddyserver/certmagic/pull/198/files
+	var cache *certmagic.Cache
+	cache = certmagic.NewCache(certmagic.CacheOptions{
+		GetConfigForCert: func(cert certmagic.Certificate) (*certmagic.Config, error) {
+			return certmagic.New(cache, certmagic.Config{}), nil
+		},
+		RenewCheckInterval: time.Minute,
+	})
+	cm := certmagic.New(cache, certmagic.Default)
+	cm.Storage = memory.New()
+	issuer := certmagic.NewACMEIssuer(cm, certmagic.ACMEIssuer{
+		CA:           directory,
+		TestCA:       directory,
+		Email:        "someone@example.com",
+		Agreed:       true,
+		TrustedRoots: trustedRoots,
+	})
+	cm.Issuers = append(cm.Issuers, issuer)
+	return cm
 }
 
 func validateSignature(r *http.Request, body []byte, signingSecret []byte) error {
@@ -244,81 +245,3 @@ func printToken(token string) error {
 	fmt.Println(string(b))
 	return nil
 }
-
-// memoryStorage is an in-memory implementation of certmagic.Storage
-// TODO(hs): verify atomic operations; tests.
-type memoryStorage struct {
-	fs afero.Fs
-	l  sync.Mutex
-}
-
-func newMemoryStorage() *memoryStorage {
-	return &memoryStorage{
-		fs: afero.NewMemMapFs(),
-	}
-}
-
-func (m *memoryStorage) Lock(ctx context.Context, name string) error {
-	m.l.Lock() // TODO: lock to be specific for name
-	return nil
-}
-
-func (m *memoryStorage) Unlock(ctx context.Context, name string) error {
-	m.l.Unlock() // TODO: unlock to be specific for name
-	return nil
-}
-
-func (m *memoryStorage) Store(ctx context.Context, key string, value []byte) error {
-	filename := m.filename(key)
-	if err := m.fs.MkdirAll(filepath.Dir(filename), 0700); err != nil {
-		return err
-	}
-	return afero.WriteFile(m.fs, filename, value, 0600)
-}
-
-func (m *memoryStorage) Load(ctx context.Context, key string) ([]byte, error) {
-	filename := m.filename(key)
-	return afero.ReadFile(m.fs, filename)
-}
-
-func (m *memoryStorage) Exists(ctx context.Context, key string) bool {
-	_, err := m.fs.Stat(m.filename(key))
-	return !errors.Is(err, fs.ErrNotExist)
-}
-
-func (m *memoryStorage) Delete(ctx context.Context, key string) error {
-	filename := m.filename(key)
-	return m.fs.Remove(filename)
-}
-
-func (m *memoryStorage) List(ctx context.Context, prefix string, recursive bool) ([]string, error) {
-	result := []string{}
-	walkFn := func(path string, info fs.FileInfo, err error) error {
-		if !info.IsDir() {
-			result = append(result, path)
-		}
-		return nil
-	}
-	err := afero.Walk(m.fs, ".", walkFn) // TODO: handle prefix and recursive correctly
-	return result, err
-}
-
-func (m *memoryStorage) Stat(ctx context.Context, key string) (certmagic.KeyInfo, error) {
-	filename := m.filename(key)
-	result := certmagic.KeyInfo{}
-	info, err := m.fs.Stat(filename)
-	if err != nil {
-		return result, err
-	}
-	result.Key = key
-	result.IsTerminal = !info.IsDir()
-	result.Modified = info.ModTime()
-	result.Size = info.Size()
-	return result, nil
-}
-
-func (m *memoryStorage) filename(key string) string {
-	return key
-}
-
-var _ certmagic.Storage = (*memoryStorage)(nil)
