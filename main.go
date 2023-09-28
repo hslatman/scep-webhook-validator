@@ -198,8 +198,9 @@ func validateSignature(r *http.Request, body []byte, signingSecret []byte) error
 		return fmt.Errorf("invalid X-Smallstep-Signature header: %w", err)
 	}
 
-	mac := hmac.New(sha256.New, signingSecret).Sum(body)
-	if ok := hmac.Equal(sig, mac); !ok {
+	h := hmac.New(sha256.New, signingSecret)
+	h.Write(body)
+	if ok := hmac.Equal(sig, h.Sum(nil)); !ok {
 		return errors.New("failed to verify request signature")
 	}
 
